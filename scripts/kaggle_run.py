@@ -92,6 +92,11 @@ def main():
     ap.add_argument("--model-id", default="Qwen/Qwen2.5-VL-3B-Instruct")
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--train-steps", type=int, default=1500)
+    # Effective batch is batch-size x grad-accum, so 2x4 matches the documented 1x8 while halving
+    # the number of forward/backward passes -- the thing that actually costs wall-clock on a T4.
+    ap.add_argument("--train-batch-size", type=int, default=2)
+    ap.add_argument("--grad-accum", type=int, default=4)
+    ap.add_argument("--zeroshot", action="store_true", help="score zero-shot too (skip if already done)")
     ap.add_argument("--skip-lora", action="store_true")
     a = ap.parse_args()
 
@@ -133,14 +138,18 @@ def main():
            "--batch-size", str(a.batch_size), "--name", "qwen3b-zeroshot"]
     if a.limit:
         cmd += ["--limit", str(a.limit)]
-    sh(cmd)
+    if a.zeroshot or a.skip_lora:
+        sh(cmd)
+    else:
+        print("[skip] zero-shot scoring (--zeroshot not set); scored in its own kernel", flush=True)
 
     # ---- LoRA
     if not a.skip_lora:
         adapter = out / "adapters" / "qwen3b-lora"
         sh([sys.executable, str(code / "scripts" / "train.py"),
             "--manifests", str(manifests), "--out", str(adapter),
-            "--model-id", a.model_id, "--load-in-4bit", "--steps", str(a.train_steps)])
+            "--model-id", a.model_id, "--load-in-4bit", "--steps", str(a.train_steps),
+            "--batch-size", str(a.train_batch_size), "--grad-accum", str(a.grad_accum)])
         cmd = [sys.executable, str(code / "scripts" / "score.py"),
                "--manifests", str(manifests), "--scores", str(scores),
                "--model-id", a.model_id, "--adapter", str(adapter), "--load-in-4bit",
@@ -149,9 +158,11 @@ def main():
             cmd += ["--limit", str(a.limit)]
         sh(cmd)
 
-    # ---- report
-    sh([sys.executable, str(code / "scripts" / "evaluate.py"),
-        "--scores", str(scores), "--out", str(out / "results")])
+    # ---- report. With the grid split across kernels each writes only its own rows, so the report
+    # is regenerated from the merged scores.csv afterwards (evaluate.py is CPU-only).
+    if scores.exists():
+        sh([sys.executable, str(code / "scripts" / "evaluate.py"),
+            "--scores", str(scores), "--out", str(out / "results")])
     print(json.dumps({"stage": a.stage, "scores": str(scores),
                       "report": str(out / "results" / "report.md")}, indent=2), flush=True)
 
