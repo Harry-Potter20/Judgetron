@@ -20,7 +20,12 @@ Every metric has a 95% CI from a bootstrap that resamples **whole tasks**, becau
 
 - Pipeline, confidence layer, metrics and report: implemented, 17 tests passing, verified end to end on synthetic scores (`results_synthetic/`). Synthetic numbers are a pipeline check, not a result.
 - Adapter verified against the **real** Guardian datasets (field names, path layouts, frame counts, task cardinality), which corrected three defects that would have produced plausible but meaningless numbers — see Data below.
-- Real-data results: **not yet run.** Scoring launched; numbers will be added when they exist, not before.
+- **Zero-shot real-data results: in** (`results_zeroshot/`). 6,742 episodes on a Kaggle T4.
+  Headline: the auto-accept rate is **0.000 in every condition** — no confidence threshold lets this
+  judge's verdicts be auto-accepted at a 5% error target. In-domain AUROC 0.588 [0.562, 0.620] over
+  96 held-out tasks. Per-class conformal coverage holds in-domain but the success class falls to
+  0.800 on the new robot (target 0.90), and refitting on a small labelled slice of it repairs that.
+- LoRA fine-tuning: **not yet run**, so the zero-shot vs fine-tuned comparison is still open.
 
 ## Data
 
