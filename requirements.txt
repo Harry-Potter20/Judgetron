@@ -1,0 +1,11 @@
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8
+pytest>=8
+# GPU side (training and scoring only)
+torch>=2.3
+transformers>=4.49
+peft>=0.12
+accelerate>=0.33
+pillow>=10
+bitsandbytes>=0.43  # only for --load-in-4bit
