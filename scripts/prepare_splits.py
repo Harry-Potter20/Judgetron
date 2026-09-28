@@ -28,7 +28,9 @@ def parse(spec):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", action="append", required=True, help="domain=path/to/metadata.jsonl")
-    ap.add_argument("--ood", required=True, help="domain=path/to/metadata.jsonl (held-out domain)")
+    ap.add_argument("--ood", action="append", required=True,
+                    help="domain=path/to/metadata.jsonl (held-out domain); repeatable to pool "
+                         "several upstream splits of the same domain into one OOD task pool")
     ap.add_argument("--ood-cal-frac", type=float, default=0.2)
     ap.add_argument("--out", default="manifests")
     ap.add_argument("--seed", type=int, default=0)
@@ -39,8 +41,13 @@ def main():
         ind += from_guardian_jsonl(parse(spec)[1], domain=parse(spec)[0])
     splits = grouped_split(ind, {"train": 0.7, "cal": 0.15, "test_id": 0.15}, seed=a.seed)
 
-    ood_domain, ood_path = parse(a.ood)
-    ood = from_guardian_jsonl(ood_path, domain=ood_domain)
+    # Pooling several upstream splits of the OOD domain only widens its TASK pool, which is what the
+    # clustered bootstrap resamples. ur5 train alone carries 7 taskvars; after the cal_ood/test_ood
+    # split that leaves 5 task clusters in test_ood, and the headline OOD CIs become unreadable.
+    ood = []
+    for spec in a.ood:
+        d, path = parse(spec)
+        ood += from_guardian_jsonl(path, domain=d)
     if a.ood_cal_frac > 0:
         o = grouped_split(ood, {"cal_ood": a.ood_cal_frac, "test_ood": 1 - a.ood_cal_frac}, seed=a.seed)
         splits.update(o)

@@ -126,3 +126,97 @@ def test_end_to_end_synthetic(tmp_path):
     # Refit on a small OOD slice.
     res2 = evaluate(scores, n_boot=200, cal_split="cal_ood")
     assert "test_ood" in res2["synthetic-judge"]["platt"]["splits"]
+
+
+# ----------------------------------------------------------- real Guardian dataset conventions
+# Field names and path layouts below are taken from the actual val splits of
+# paulpacaud/{rlbenchfail,bdv2fail,ur5fail}_val_dataset, not from the dataset cards.
+
+def _rlbench_imgs():
+    b = "records/open_drawer_long+2/wrong_sequence/ep_4/run_0/subtask_0"
+    return [f"{b}/{t}_img_viewpoint_{v}.png"
+            for t in ("start", "end") for v in ("left", "right", "wrist", "front")]
+
+
+def _bridge_imgs():
+    b = "data/failure_forge/data/bdv2fail_val_dataset/records/numpy_256_x_train/9"
+    return [f"{b}/{t}_img_viewpoint_front.png" for t in ("start", "end")]
+
+
+def _ur5_imgs():
+    b = "records/real_put_fruit_in_box+4/0"
+    return [f"{b}/{t}_img_viewpoint_{v}.png" for t in (1, 6) for v in (0, 1, 2)]
+
+
+def test_bridge_image_paths_are_anchored_at_records():
+    """bdv2fail stores absolute paths from the machine that built the dataset
+    (`data/failure_forge/data/bdv2fail_val_dataset/records/...`). Left alone, every bridge image
+    would resolve to a directory that does not exist locally."""
+    from judgecal.data import normalise_image_path
+    out = normalise_image_path(_bridge_imgs()[0])
+    assert out.startswith("records/")
+    assert "failure_forge" not in out
+    # rlbench/ur5 paths are already relative and must be left alone
+    assert normalise_image_path(_rlbench_imgs()[0]) == _rlbench_imgs()[0]
+
+
+def test_every_domain_contributes_the_same_number_of_frames():
+    """The raw datasets give 8 frames (rlbench), 6 (ur5) and 2 (bridge). Handing those straight to
+    the judge makes view count vary WITH domain, so an in-domain vs OOD gap would partly measure
+    how many views the judge saw rather than deployment shift -- which is the entire question."""
+    from judgecal.data import normalise_image_path, select_start_end
+    for imgs in (_rlbench_imgs(), _bridge_imgs(), _ur5_imgs()):
+        sel = select_start_end([normalise_image_path(p) for p in imgs])
+        assert len(sel) == 2, f"expected start+end, got {len(sel)}"
+
+
+def test_selected_frames_are_start_and_end_of_one_viewpoint():
+    from judgecal.data import normalise_image_path, select_start_end
+    r = select_start_end(_rlbench_imgs())
+    assert r[0].endswith("start_img_viewpoint_front.png")
+    assert r[1].endswith("end_img_viewpoint_front.png")
+    # ur5 uses numeric timesteps, so ordering must be numeric, not lexicographic
+    u = select_start_end(_ur5_imgs())
+    assert u[0].endswith("1_img_viewpoint_0.png") and u[1].endswith("6_img_viewpoint_0.png")
+    assert len({p.split("_img_viewpoint_")[1] for p in u}) == 1, "frames must share one viewpoint"
+
+
+def test_unparseable_frame_names_fall_back_to_the_raw_list():
+    """An unfamiliar dataset must degrade to previous behaviour, not silently drop frames."""
+    from judgecal.data import select_start_end
+    odd = ["records/x/frame_000.png", "records/x/frame_009.png", "records/x/frame_017.png"]
+    assert select_start_end(odd) == odd
+
+
+def test_taskvar_is_the_grouping_key(tmp_path):
+    """ur5 and rlbench carry no task/task_name/task_id/env_name, so the adapter previously grouped
+    by INSTRUCTION. On ur5 that is 36 instruction groups over only 7 real taskvars, which puts
+    episodes of one taskvar into different splits -- the leakage grouped_split exists to prevent."""
+    import json
+    from judgecal.data import from_guardian_jsonl
+    p = tmp_path / "meta.jsonl"
+    rows = [
+        # same taskvar, different (perturbed) instructions -- must stay one group
+        {"taskvar": "put_fruit+1", "task_instruction": "put the lemon in the box",
+         "execution_reward": 0, "images": _ur5_imgs(), "failure_mode": "no_grasp"},
+        {"taskvar": "put_fruit+1", "task_instruction": "place the lemon into the box",
+         "execution_reward": 1, "images": _ur5_imgs(), "failure_mode": None},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    eps = from_guardian_jsonl(p, domain="ur5")
+    assert {e.task for e in eps} == {"put_fruit+1"}, "differing instructions must not split a taskvar"
+
+
+def test_taskvar_beats_bridge_task_name(tmp_path):
+    """bridge has task_name, but it names the SCENE (13 values over 7,830 episodes). Grouping on it
+    would make the clustered bootstrap absurdly coarse and merge unrelated tasks."""
+    import json
+    from judgecal.data import from_guardian_jsonl
+    p = tmp_path / "meta.jsonl"
+    rows = [{"taskvar": f"scene_drawer_pnp_0{i}_train", "task_name": "tabletop_dark_wood",
+             "task_instruction": f"move object {i}", "execution_reward": i % 2,
+             "images": _bridge_imgs(), "failure_mode": None} for i in range(4)]
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    eps = from_guardian_jsonl(p, domain="bridge")
+    assert len({e.task for e in eps}) == 4, "taskvar must win over the coarser task_name"
+    assert all(e.task != "tabletop_dark_wood" for e in eps)
