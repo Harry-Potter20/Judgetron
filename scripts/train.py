@@ -10,6 +10,7 @@ Example (Kaggle T4, 16 GB):
     --load-in-4bit --steps 1500 --grad-accum 8
 """
 import argparse
+import json
 import random
 import sys
 import time
@@ -33,6 +34,8 @@ def main():
     ap.add_argument("--load-in-4bit", action="store_true")
     ap.add_argument("--max-pixels", type=int, default=256 * 28 * 28)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--checkpoint-every", type=int, default=100,
+                    help="save the adapter every N steps; 0 disables")
     a = ap.parse_args()
 
     import torch
@@ -83,6 +86,16 @@ def main():
         if step % 25 == 0 or step == a.steps - 1:
             print(f"step {step:5d}  loss(ema) {running:.4f}  lr {sched.get_last_lr()[0]:.2e}  {time.time() - t0:.0f}s",
                   flush=True)
+        # Save periodically. Saving only at the end means a session that is killed at its wall --
+        # which a long fine-tune on a fixed-length runtime can genuinely hit -- yields nothing at
+        # all, discarding every GPU-hour spent. This is NOT checkpoint selection: the adapter that
+        # gets evaluated is still whichever one the fixed budget ends on, and nothing here consults
+        # cal or test.
+        if a.checkpoint_every and (step + 1) % a.checkpoint_every == 0:
+            judge.model.save_pretrained(a.out)
+            Path(a.out).joinpath("PROGRESS.json").write_text(
+                json.dumps({"step": step + 1, "of": a.steps, "loss_ema": running}))
+            print(f"  checkpointed at step {step + 1}", flush=True)
 
     judge.model.save_pretrained(a.out)
     print(f"saved adapter to {a.out}")
