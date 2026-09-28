@@ -18,14 +18,31 @@ Every metric has a 95% CI from a bootstrap that resamples **whole tasks**, becau
 
 ## Status
 
-- Pipeline, confidence layer, metrics and report: implemented, 11 tests passing, verified end to end on synthetic scores (`results_synthetic/`). Synthetic numbers are a pipeline check, not a result.
-- Real-data results: **not yet run.** Pending GPU time.
+- Pipeline, confidence layer, metrics and report: implemented, 17 tests passing, verified end to end on synthetic scores (`results_synthetic/`). Synthetic numbers are a pipeline check, not a result.
+- Adapter verified against the **real** Guardian datasets (field names, path layouts, frame counts, task cardinality), which corrected three defects that would have produced plausible but meaningless numbers — see Data below.
+- Real-data results: **not yet run.** Scoring launched; numbers will be added when they exist, not before.
 
 ## Data
 
-Guardian failure-detection datasets (Pacaud et al.) on Hugging Face: RLBench-Fail (sim, Franka), BridgeDataV2-Fail (real, WidowX), UR5-Fail (real, UR5, failures from a deployed policy). Metadata is jsonl with `images`, `execution_reward` (1 success, 0 failure) and `failure_mode`. Check each dataset card and confirm field names before building splits; the adapter tries several candidate keys for instruction and task and warns when it falls back.
+Guardian failure-detection datasets (Pacaud et al.) on Hugging Face: RLBench-Fail (sim, Franka), BridgeDataV2-Fail (real, WidowX), UR5-Fail (real, UR5, failures from a deployed policy). Metadata is jsonl with `images`, `execution_reward` (1 success, 0 failure) and `failure_mode`.
 
-Default protocol: in-domain = RLBench-Fail + BridgeDataV2-Fail (split by task into train / cal / test_id), OOD = UR5-Fail (split by task into cal_ood 20% / test_ood 80%).
+Measured from the real val splits, not the cards:
+
+| source | repo stem | train / val / test | taskvars (train) | frames per episode |
+|---|---|---|---|---|
+| RLBench-Fail | `paulpacaud/rlbenchfail_*` | 12,358 / 1,000 / 1,000 | 70 | 8 (4 viewpoints x start/end) |
+| BridgeDataV2-Fail | `paulpacaud/bdv2fail_*` | 7,830 / 1,000 / 1,000 | 830 | 2 |
+| UR5-Fail | `paulpacaud/ur5fail_*` | 400 / 30 / 140 | 7 / 7 / 23 | 6 (3 viewpoints x 2 times) |
+
+All three are close to label-balanced. Three things about this data break the obvious adapter, and all three are handled:
+
+- **Group by `taskvar`.** RLBench and UR5 carry no `task`/`task_name`/`task_id`/`env_name`, so a candidate-key adapter falls back to grouping by instruction — on UR5 that is 36 instruction groups spanning only 7 real taskvars, putting episodes of one taskvar into different splits. Bridge *does* have `task_name`, but it names the scene (13 values over 7,830 episodes) while its instructions are perturbed per episode (4,320 distinct), so both candidates are wrong in opposite directions.
+- **Use start and end of one viewpoint.** Frame count varies with domain (8 / 6 / 2). Feeding all of them makes view count a domain confound, so an in-domain vs OOD gap would partly measure how many views the judge saw rather than deployment shift.
+- **Anchor image paths at `records/`.** Bridge stores paths from the machine that built the dataset (`data/failure_forge/...`).
+
+Default protocol: in-domain = RLBench-Fail + BridgeDataV2-Fail (split by task into train / cal / test_id), OOD = UR5-Fail (split by task into cal_ood 20% / test_ood 80%). `--ood` is repeatable, and UR5 pools all three of its upstream splits: the bootstrap resamples whole tasks, and UR5 train alone leaves 5 task clusters in `test_ood`, which makes the headline OOD intervals unreadable. Pooling gives 24 clusters over 435 episodes.
+
+The image tarballs total ~68 GB (RLBench's test archive alone is 45.8 GB, mostly `.avi` video). `scripts/kaggle_run.py` runs the pipeline where the data is, fetching only the tarballs a stage needs and extracting only frames.
 
 ## Run
 
@@ -34,14 +51,15 @@ pip install -r requirements.txt
 python -m pytest -q tests
 
 # 1. data (repo ids from the Guardian collection on HF)
-huggingface-cli download paulpacaud/ur5fail_val_dataset --repo-type dataset --local-dir data/ur5_fail
-# ...same for RLBench-Fail and BridgeDataV2-Fail
+huggingface-cli download paulpacaud/ur5fail_train_dataset --repo-type dataset --local-dir data/ur5_fail
+# ...same for RLBench-Fail and BridgeDataV2-Fail; see the size warning above
 
-# 2. task-disjoint splits
+# 2. task-disjoint splits (--ood repeatable; pool UR5's splits for enough task clusters)
 python scripts/prepare_splits.py \
   --source rlbench=data/rlbench_fail/metadata_execution.jsonl \
   --source bridge=data/bridge_fail/metadata_execution.jsonl \
-  --ood ur5=data/ur5_fail/metadata_execution.jsonl --out manifests/
+  --ood ur5=data/ur5_fail_train/metadata_execution.jsonl \
+  --ood ur5=data/ur5_fail_test/metadata_execution.jsonl --out manifests/
 
 # 3. zero-shot baseline
 python scripts/score.py --manifests manifests/ --scores results/scores.csv --name qwen3b-zeroshot
@@ -56,6 +74,13 @@ python scripts/evaluate.py --scores results/scores.csv --out results/
 ```
 
 Smoke-test scoring first with `--limit 20`.
+
+Or run the whole thing remotely, without staging 68 GB locally:
+
+```bash
+python scripts/kaggle_run.py --stage smoke --limit 24 --skip-lora   # ~1.1 GB, zero-shot
+python scripts/kaggle_run.py --stage full                           # ~9.9 GB, + LoRA
+```
 
 No GPU? `python scripts/synthetic_demo.py && python scripts/evaluate.py --scores results_synthetic/scores.csv --out results_synthetic`.
 
