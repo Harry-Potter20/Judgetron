@@ -1,6 +1,6 @@
 {
-  "id": "ekechukwudi/judgetron-smoke",
-  "title": "judgetron-smoke",
+  "id": "ekechukwudi/judgetron-full-zeroshot",
+  "title": "judgetron-full-zeroshot",
   "code_file": "judgetron_smoke.py",
   "language": "python",
   "kernel_type": "script",

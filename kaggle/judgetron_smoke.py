@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 
-STAGE = os.environ.get("JUDGETRON_STAGE", "smoke")
+STAGE = os.environ.get("JUDGETRON_STAGE", "full")
 LIMIT = os.environ.get("JUDGETRON_LIMIT", "24")
 
 # Qwen2.5-VL needs transformers>=4.49; Kaggle's image is usually older.
@@ -25,4 +25,9 @@ cmd = [sys.executable, f"{code}/scripts/kaggle_run.py", "--stage", STAGE,
        "--code", code, "--data", "/kaggle/tmp/data", "--out", "/kaggle/working"]
 if STAGE == "smoke":
     cmd += ["--limit", LIMIT, "--skip-lora"]
+if os.environ.get("JUDGETRON_SKIP_LORA", "1") == "1":
+    # Zero-shot scoring of the full grid is ~2.4 h; LoRA (1500 steps x 8 accum = 12,000 passes)
+    # is another 4-7 h. Together they overrun a single Kaggle session, so the two run as separate
+    # kernels rather than as one job that dies at the 12 h wall with nothing saved.
+    cmd += ["--skip-lora"]
 subprocess.run(cmd, check=True)
