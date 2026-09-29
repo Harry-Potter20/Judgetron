@@ -145,6 +145,11 @@ def from_guardian_jsonl(
     """
     path = Path(path)
     root = Path(image_root) if image_root else path.parent
+    # Identify the SOURCE FILE in the uid. `--ood` is repeatable so one domain can pool several
+    # jsonls, and both episode_id and the line index restart in each file -- so "ur5:0:59" was
+    # produced by both the train and test files, for genuinely different episodes with different
+    # tasks and labels. Six such collisions occurred in test_ood and two in cal_ood.
+    src = path.parent.name or path.stem
     episodes, n_no_instr, n_no_task = [], 0, 0
     with path.open() as f:
         for i, line in enumerate(f):
@@ -164,7 +169,7 @@ def from_guardian_jsonl(
                 else [normalise_image_path(p) for p in imgs]
             episodes.append(
                 Episode(
-                    uid=f"{domain}:{s.get('id', s.get('episode_id', i))}:{i}",
+                    uid=f"{domain}:{src}:{s.get('id', s.get('episode_id', i))}:{i}",
                     images=[str(root / p) for p in imgs],
                     instruction=str(instr),
                     label=int(s[label_key]),

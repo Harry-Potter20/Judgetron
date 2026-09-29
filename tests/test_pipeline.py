@@ -220,3 +220,27 @@ def test_taskvar_beats_bridge_task_name(tmp_path):
     eps = from_guardian_jsonl(p, domain="bridge")
     assert len({e.task for e in eps}) == 4, "taskvar must win over the coarser task_name"
     assert all(e.task != "tabletop_dark_wood" for e in eps)
+
+
+def test_uids_are_unique_when_a_domain_pools_several_files(tmp_path):
+    """`--ood` is repeatable, so one domain can pool several jsonls. Both `episode_id` and the line
+    index restart in each file, so a uid built from domain + episode_id + line index collides across
+    them -- "ur5:0:59" came from both the train and test files, for different episodes with
+    different tasks and labels. Six such collisions landed in test_ood and two in cal_ood, and a
+    merge that deduplicates on uid silently dropped those episodes.
+    """
+    import json
+    from judgecal.data import from_guardian_jsonl
+
+    row = {"taskvar": "t+0", "task_instruction": "do it", "execution_reward": 1,
+           "images": _ur5_imgs(), "episode_id": 0}
+    eps = []
+    for name in ("train", "test"):
+        d = tmp_path / f"ur5_{name}"
+        d.mkdir()
+        p = d / "metadata_execution.jsonl"
+        p.write_text(json.dumps(row))
+        eps += from_guardian_jsonl(p, domain="ur5")
+
+    uids = [e.uid for e in eps]
+    assert len(uids) == len(set(uids)), f"uid collision across pooled files: {uids}"
